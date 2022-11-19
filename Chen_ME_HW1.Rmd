@@ -1,7 +1,5 @@
 ---
-title: "Marketing Engineering HW1"
-author: "Chuhan Chen"
-date: "2022/9/28"
+title: "Linear Regression"
 output: pdf_document
 ---
 
