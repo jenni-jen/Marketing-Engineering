@@ -1,0 +1,183 @@
+---
+title: "Collaborative Filtering"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Recommending Songs to Music Listeners
+
+```{r libs, message=FALSE, warning=FALSE}
+library(tm)
+library(SnowballC)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(dplyr)
+library(softImpute) # collaborative filtering package
+```
+
+Read the data.
+
+```{r read data}
+songs = read.csv("Songs.csv")
+users = read.csv("Users.csv")
+music = read.csv("MusicRatings.csv")
+```
+
+We apply the `cf.training.set` function to split the dataset into a training set and a test set, and create an incomplete training matrix.
+
+```{r train test split}
+source("functionsCF.R")
+set.seed(144)
+training.rows = cf.training.set(music$userID, music$songID, prop=0.92)
+music.train = music[training.rows,]
+music.test = music[-training.rows,]
+mat.train = Incomplete(music.train[,1], music.train[,2], music.train[,3])
+```
+
+We will work with centered matrices in this problem. This makes use of the `biScale` function. We set `row.scale` and `col.scale` to `FALSE` so the scales will be equal to 1.
+
+```{r centered matrices}
+set.seed(15071)
+mat.scaled = biScale(mat.train, maxit=1000, row.scale = FALSE, col.scale = FALSE)
+```
+
+## a. Choose the Number of Archetypal Users
+
+```{r calculate metrics for the ranks}
+set.seed(123)
+ranks_df = cf.evaluate.ranks(music.train, ranks=1:15, prop.validate=0.05)
+ranks_df
+```
+
+Plot the model's estimated performance as a function the number of archetypal users.
+
+```{r plot performance vs archetypal number, fig.align='center', fig.dim=c(5,3), fig.cap='The model\'s estimated performance.', dev.args=list(pointsize=8)}
+cv_r2 = ranks_df$r2
+plot(1:15, cv_r2, pch=19, ylim=c(0.15, 0.35), xlab='Number of archetypes (k)', 
+     ylab='Cross-Validation R2')
+grid()
+```
+
+According to Figure 1, I choose **four** archetypal users and I think it is a reasonable number that I would have intuitively guessed. The model of four archetypal users nearly achieves the highest $R^2$ , and this number would neither make the model underfitted nor overfitted.
+
+## b. Fit a Collaborative Filtering Model
+
+With four archetypal users, we fit a collaborative filtering model (called `fit`) with the entire training set.
+
+```{r fit CF}
+set.seed(15071)
+fit = softImpute(mat.scaled, rank.max=4, lambda=0, maxit=1000) # we choose k = 4
+```
+
+Then we Use the model to make test-set predictions. We calculate in-sample and out-of-sample $R^2$ of the model.
+
+```{r R2 OSR2, fig.align='center', fig.dim=c(6,3), fig.cap='Histograms of the predictions.', dev.args=list(pointsize=8)}
+pred.insample.0 <- impute(fit, music.train[, 1], music.train[, 2])
+pred.outsample.0 <- impute(fit, music.test[, 1], music.test[, 2])
+# plot the histograms of these predicted values
+par(mfrow=c(1,2))
+hist(pred.insample.0, xlab='In-Sample Predictions', main='')
+hist(pred.outsample.0, xlab='Out-of-Sample Predictions', main='')
+```
+
+According to Figure 2, some values are lower than 1. We simply treat all values lower than 1 as 1's. Then We compute the in-sample and out-of-sample performance of the model.
+
+```{r R2 OSR2 computing, results='hold'}
+pred.insample = pmax(pred.insample.0, 1)
+pred.outsample = pmax(pred.outsample.0, 1)
+
+R2.insample = 1 - sum((pred.insample-music.train$rating)^2)/
+  sum((mean(music.train$rating) - music.train$rating)^2)
+R2.outsample = 1 - sum((pred.outsample-music.test$rating)^2)/
+  sum((mean(music.test$rating) - music.test$rating)^2)
+print(paste('In-sample R2:', round(R2.insample, 4)), quote=F)
+print(paste('Out-of-sample R2:', round(R2.outsample, 4)), quote=F)
+```
+
+Answer to *Why we re-fit a collaborative filtering model with the entire training set rather than re-using the one obtained in Question a. for the corresponding number of archetypal users*:
+
+The model obtained in Question a. uses the dataset `music.train` as both the training set and the validation set, so it does not cover the data in the entire training set. We need to use the entire training set `music.train` to re-fit the model, so that the model can cover all the data in the training set.
+
+## c. Archetypes' Estimated Ratings and Music Taste
+
+We compute the estimated rating of each archetype for each song by the command `fit$v * fit$d`. Then we derive each archetype's average (centered) preferences by music genre to describe each archetype's music taste.
+
+```{r archetype ratings, warning=FALSE}
+arche.ratings = fit$v * fit$d
+arche.ratings = as.data.frame(arche.ratings)
+colnames(arche.ratings) = paste0('type', 1:4)
+arche.ratings$genre = songs$genre
+genre.ratings = arche.ratings %>% group_by(genre) %>% 
+  summarise(type1_mean=mean(type1), type2_mean=mean(type2), 
+            type3_mean=mean(type3), type4_mean=mean(type4))
+data.frame(genre.ratings)
+```
+
+According to the output, we can describe each archetype's music taste:
+
+-   Type 1: has a strong preference for folk music and against country and RnB music, showing that this archetype is fond of traditional melodies;
+-   Type 2: likes country, folk, and pop music, and dislikes rap, electronic, RnB, and rock music, showing that this type prefers quiet music to noisy music;
+-   Type 3: this type's preference for music is similar to Type 2's, and this type dislikes electronic and rap music more;
+-   Type 4: likes folk and pop music, and strongly dislikes rap music, showing that this type's music taste is likely to be people's common music taste.
+
+## d. Recommend Songs to Daisy
+
+Daisy (`userID` = 1584) has just selected the *Surprise me!* option, which automatically builds a playlist for her.
+
+Daisy's linear combination of archetypes:
+
+```{r Daisy arche}
+Daisy.arche = fit$u[1584,]
+Daisy.arche
+```
+
+Recommend five new songs (Daisy has not rated) to Daisy:
+
+```{r recommend five songs}
+# estimate Daisy's ratings on each song, sort the ratings in a descending order
+Daisy.ratings = rowSums(arche.ratings[,1:4] * Daisy.arche)
+Daisy.ratings = as.data.frame(Daisy.ratings)
+colnames(Daisy.ratings) = c('rating')
+Daisy.ratings$songID = 1:dim(Daisy.ratings)[1]
+Daisy.ratings = Daisy.ratings[order(-Daisy.ratings$rating), ]
+
+# songs in Daisy's playlist
+Daisy.playlist = music[music$userID==1584, 2]
+
+# recommend five new songs to Daisy, on which she will rate the highest
+recommend5 = c(); i = 0
+for (id in Daisy.ratings$songID){
+  if (id %in% Daisy.playlist == FALSE){
+    recommend5 = append(recommend5, id)
+    i = i + 1
+  }
+  if (i == 5){break}
+}
+recommend5
+```
+
+The five new songs recommended to Daisy are:
+
+```{r five new songs}
+five_new_songs = songs[recommend5, -3]
+five_new_songs
+```
+
+Compare these five new songs to the five songs that Daisy has rated the highest:
+
+```{r five highest songs}
+# Songs that Daisy has rated, sorted from the highest rating to the lowest
+highest_on_playlist = music[music$userID==1584, 2:3]
+highest_on_playlist = highest_on_playlist[order(-highest_on_playlist$rating),]
+
+# five songs of the highest ratings
+highest5 = highest_on_playlist$songID[1:5]
+five_highest_songs = songs[highest5, -3]
+five_highest_songs
+```
+
+The five songs that Daisy has rated the highest are in the pop and rock genres. Four of the five songs that Daisy will give the highest ratings are also in the pop and rock genres. This indicates that Daisy will like the songs that we recommend to her.
