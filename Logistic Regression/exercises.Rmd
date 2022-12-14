@@ -1,0 +1,279 @@
+---
+title: "Logistic Regression Excercises"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r libs, message=FALSE, warning=FALSE}
+library(dplyr)
+library(caret)
+library(caTools)
+library(pROC)
+```
+
+# Problem 1: Predicting the Popularity of Music Records
+
+Predict whether a song will rank in top ten. The data used are from 2009 and before 2009. The threshold probability for the logistic regression model is 0.45.
+
+```{r songs read data}
+songs = read.csv("songs.csv")
+songs = songs[songs$Year <= 2009,][,c(-2, -3, -4, -5)]
+```
+
+Use stratified sampling to split the data into a training set and a test set. The test size is 0.2.
+
+```{r songs train test split}
+set.seed(144)
+split = createDataPartition(songs$Top10, p = 0.8, list = FALSE)
+songs_train = songs[split,]
+songs_test = songs[-split,]
+```
+
+Build the logistic regression model.
+
+```{r songs logistic}
+logreg = glm(Top10 ~ ., data=songs_train, family="binomial")
+summary(logreg)
+```
+
+The confusion matrix of the prediction is
+
+```{r songs confusion matrix}
+pred_prop = predict(logreg, songs_test, type="response")
+predicted_values = ifelse(pred_prop > 0.45, 1, 0)
+actual_values = songs_test$Top10
+table(predicted_values, actual_values) # confusion matrix
+```
+
+Therefore, 
+$$
+\text{Accuracy} = \dfrac{TP + TN}{TP + FP + TN + FN} = \dfrac{62+1171}{62+49+1171+158} = 0.8563 \ ,
+$$ 
+$$
+\text{True Positive Rate (TPR)} = \dfrac{TP}{TP+FN} = \dfrac{62}{62+158} = 0.2818 \ ,
+$$ 
+$$
+\text{False Positive Rate (FPR)} = \dfrac{FP}{FP + TN} = \dfrac{49}{49 + 1171} = 0.0402 \ .
+$$
+
+# Problem 2: Framingham Heart Study
+
+Read the data and split them randomly into a training set and a test set. The test size is 0.25.
+
+```{r framingham read data and train test split}
+data = read.csv("framingham.csv")
+data$TenYearCHD = factor(data$TenYearCHD)
+data$male = factor(data$male)
+data$currentSmoker = factor(data$currentSmoker)
+data$BPMeds = factor(data$BPMeds)
+data$prevalentStroke = factor(data$prevalentStroke)
+data$prevalentHyp = factor(data$prevalentHyp)
+data$diabetes = factor(data$diabetes)
+data[data$education=='Some college/vocational school',]$education = 
+  'College/Vocational' # display the model results in a neat way
+set.seed(38)
+N = nrow(data)
+idx = sample.split(data$TenYearCHD, 0.75)
+train = data[idx,]
+test = data[!idx,]
+```
+
+## a. Calculate Expected Costs and the Value of $p$
+
+![Decision tree for prescribing the approved medication to prevent CHD.](dt.png)
+
+The expected cost borne by a patient who does not take the preventive medication: 
+$$
+\mathbb{E} \left[ \text{cost without medication} \right] = p \times 165000 + (1 - p) \times 0 = 165000p
+$$
+
+The expected cost borne by a patient who takes the preventive medication: 
+$$
+\mathbb{E} \left[ \text{cost with medication} \right] = p / 2.3 \times 172500 + (1 - p / 2.3) \times 7500 = 7500 + 71739p
+$$
+
+To solve the value of $p$ when we would recommend the medication, we write 
+$$
+\mathbb{E} \left[ \text{cost without medication} \right] = \mathbb{E} \left[ \text{cost with medication} \right]
+$$
+
+```{r calculate p}
+p = 7500 / (165000 - (172500/2.3 - 7500/2.3))
+print(paste("The value of p is", round(p, 4)), quote=F)
+```
+
+This equation gives $p = 0.08$ . Therefore, when $p \ge 0.08$, we would recommend the medication.
+
+## b. Logistic Regression: First Fit
+
+We use all the independent variables in the dataset to construct a logistic regression model, which predicts the probability that a patient will experience CHD within the next 10 years.
+
+```{r framingham logistic 1}
+fit1 = glm(TenYearCHD ~ ., data=train, family="binomial")
+summary(fit1)
+```
+
+According to the model `fit1`, the most important risk factors for 10-year CHD are the statistically significant variables at the 95% level. They are `male`, `age`, `cigsPerDay`, `totChol`, `sysBP`, and `glucose`. These make intuitive clinical sense as male, elder people, people who smokes more cigarettes, and people with high cholesterol, high blood pressure and high blood sugar are more likely to experience CHD.
+
+## c. Predict Whether a Certain Patient Will Experience CHD
+
+The patient is a 55-year old college-educated male, smokes 10 cigarettes per day, is not on blood pressure medication, has not had a stroke, has hypertension, has not been diagnosed with diabetes, has a Cholesterol of 220, as a systolic blood pressure of 140 and a diastolic blood pressure of 100, has a BMI of 30, has a heart rate of 60, and has a glucose level 80.
+
+We predict the probability that this patient will experience CHD in the next ten years
+
+```{r framingham a patient}
+new_patient = data.frame(
+  male = as.factor(1),
+  age = 55,
+  education = 'College',
+  currentSmoker = as.factor(1),
+  cigsPerDay = 10,
+  BPMeds = as.factor(0),
+  prevalentStroke = as.factor(0),
+  prevalentHyp = as.factor(1),
+  diabetes = as.factor(0),
+  totChol = 220,
+  sysBP = 140,
+  diaBP = 100,
+  BMI = 30,
+  heartRate = 60,
+  glucose = 80
+)
+pred_prop_new_patient = predict(fit1, new_patient, type="response")
+print(paste("The predicted probability is",round(pred_prop_new_patient,4)), quote=F)
+```
+
+Since $0.2487>p=0.08$ , the physician should prescribe the medication.
+
+## d. Other Interventions for the Patient
+
+From Question b., we know that variables `male`, `age`, `cigsPerDay`, `totChol`, `sysBP`, and `glucose` are important risk factors for 10-year CHD. Other variables are not easy to change or cannot be changed, but this patient can smoke less to decrease the risk of experiencing CHD in the next ten years. Therefore, we try three levels of the variable `cigsPerDay`, and then we predict the probability that the patient will experience CHD in the next ten years. The three levels are `cigsPerDay`=5, `cigsPerDay`=2, and {`currentSmoker`=0, `cigsPerDay`=0} . Note `cigsPerDay`=0 makes `currentSmoker`=0.
+
+```{r framingham intervention}
+# level1: cigsPerDay = 5
+new_patient_cig1 = new_patient
+new_patient_cig1$cigsPerDay = 5
+# level1: cigsPerDay = 2
+new_patient_cig2 = new_patient
+new_patient_cig2$cigsPerDay = 2
+# level3: currentSmoker = 0, cigsPerDay = 0
+new_patient_cig3 = new_patient
+new_patient_cig3$currentSmoker = as.factor(0)
+new_patient_cig3$cigsPerDay = 0
+# predict the probability that the patient will experience CHD
+prob1 = predict(fit1, new_patient_cig1, type="response")
+prob2 = predict(fit1, new_patient_cig2, type="response")
+prob3 = predict(fit1, new_patient_cig3, type="response")
+data.frame(cigsPerDay10=pred_prop_new_patient, cigsPerDay5=prob1, 
+           cigsPerDay2=prob2, cigsPerDay0=prob3, row.names=c("Probability"))
+```
+
+If this patient stops smoking, his excessive `totChol` and `sysBP` levels will decrease to normal (his `glucose` level is normal). Let us assume `totChol`=180 and `sysBP`=120. Then the predicted probability that this patient will experience CHD in the next ten years is
+
+```{r framingham intervention improve}
+new_patient_cig3_improve = new_patient_cig3
+new_patient_cig3_improve$totChol = 180
+new_patient_cig3_improve$sysBP = 120
+prob4 = predict(fit1, new_patient_cig3_improve, type="response")
+print(paste("The predicted probability is", round(prob4, 4)), quote=F)
+```
+
+We can see that the predicted probability decreases from 0.2487 to 0.1537, nearly 10%! Therefore, in addition to prescribing the medication, the physician should suggest this patient stop smoking, which can greatly reduce the patient's risk of experiencing CHD.
+
+## e. Prediction on the Test Set & Confusion Matrix
+
+We use the threshold determined in Question a., which is $p=0.08$ , to build prediction on the test set. Then we compute its confusion matrix, accuracy, True Positive Rate, and False Positive Rate.
+
+```{r framingham validation metrics}
+CHD_pred_prop = predict(fit1, test, type="response")
+CHD_predicted_values = ifelse(CHD_pred_prop > p, 1, 0)
+CHD_actual_values = test$TenYearCHD
+table(CHD_predicted_values, CHD_actual_values) # confusion matrix
+```
+
+Therefore,
+
+$$
+\text{Accuracy} = \dfrac{TP + TN}{TP + FP + TN + FN} = \dfrac{124+287}{124+488+287+15} = 0.4497 \ ,
+$$ 
+$$
+\text{True Positive Rate (TPR)} = \dfrac{TP}{TP+FN} = \dfrac{124}{124+15} = 0.8921\ ,
+$$ 
+$$
+\text{False Positive Rate (FPR)} = \dfrac{FP}{FP + TN} = \dfrac{488}{488 + 287} = 0.6297 \ .
+$$
+
+Finally, we calculate the expected economic cost for all patients in the test set if patients are prescribed the medication using the strategy implied by the model.
+
+$$
+\begin{aligned}
+  \mathbb{E} \left[ \text{total cost} \right]
+  & = 172500 \times TP / 2.3 + 7500 \times FP + 165000 \times FN \\
+  & = 172500 \times 124 / 2.3 + 7500 \times 488 + 165000 \times 15 \\
+  & = 15435000
+\end{aligned}
+$$
+
+The expected economic cost for all patients in the test set is \$15,435,000.
+
+## f. The Expected Economic Costs in the Baseline and Ideal Models
+
+We consider a "baseline" model and an "ideal" model. The baseline model reflects the current practice, where the medication is not prescribed to any patient. In the ideal model, medication is only prescribed to patients that would otherwise develop CHD, assuming perfect *ex post* information on the test set. For each of these models, we compute the expected economic cost for all patients in the test set.
+
+$$
+\begin{aligned}
+  & \mathbb{E} [\text{baseline cost}] = 165000 \times (TP + FN) = 165000 \times (124 + 15) = 22935000 \ , \\
+  & \mathbb{E} [\text{ideal cost}] = 172500 \times (TP + FN)/2.3 = 172500 \times (124 + 15)/2.3 = 10425000 \ .
+\end{aligned}
+$$
+
+The baseline cost is \$22,935,000, and the ideal cost is \$10,425,000. We can see that if we use logistic regression to predict whether a person will experience CHD in the next ten years and prescribe the medication according to the predictions, we can reduce the expected economic cost for all patients in the test set from \$22,935,000 to \$15,435,000, which is 32.7%. These results indicate that it is necessary and significant to do the predictions and the prescriptions according to the predictions.
+
+## g. ROC Curve and AUC Score
+
+We construct the ROC curve and compute the AUC score for the logistic regression model (`fit1`) on the test set. Sensitivity = TPR, Specificity = 1 - FPR.
+
+```{r framingham fit1 ROC, fig.dim=c(4,3), fig.align='center', fig.cap="ROC curve and AUC score.", dev.args=list(pointsize=8), message=FALSE}
+par(pty="s")
+CHD_roc = roc(response=CHD_actual_values, predictor=CHD_pred_prop)
+plot.roc(CHD_roc, print.auc=T, auc.polygon=T, auc.polygon.col='linen', print.thres=T)
+plot.roc(smooth(CHD_roc), add=TRUE, col='firebrick')
+```
+
+If decision-makers look to further study possible medications for preventing CHD, they can use the ROC curve to choose the prediction probability that achieves high TPR (high sensitivity) and low FPR (high specificity). They can use the prediction probability to decide whether a medication should be prescribed to patients. Since the condition that a patient predicted to not experience CHD actually experiences CHD has serious consequences, decision-makers should put emphasis on increasing the TPR.
+
+## h. Rebuild the Logistic Regression Model
+
+We choose three risk factors to fit a logistic regression model on the training data. They are `male`, `age`, and `cigsPerDay`.
+
+```{r framingham logistic 2}
+train_subset = train[,c(1, 2, 5, 16)]
+test_subset = test[,c(1, 2, 5, 16)]
+fit2 = glm(TenYearCHD ~ ., data=train_subset, family="binomial")
+summary(fit2)
+```
+
+We evaluate the model performance on the test data.
+
+```{r framingham fit2 validation}
+CHD_pred_prop2 = predict(fit2, test_subset, type="response")
+CHD_predicted_values2 = ifelse(CHD_pred_prop2 > p, 1, 0)
+CHD_predicted_values2 = as.factor(CHD_predicted_values2)
+confusionMatrix(data=CHD_predicted_values2, reference=CHD_actual_values, positive="1")
+```
+
+The results show that accuracy = 0.3829, TPR = sensitivity = 0.8993, and FPR = 1 - specificity = 0.7097. From the comparison between `fit1` and `fit2`, we see that the simplified logistic regression model does not perform much worse than the full model.
+
+|        | Accuracy | True Positive Rate | False Positive Rate |
+|:------:|:--------:|:------------------:|:-------------------:|
+| `fit1` |  0.4497  |       0.8921       |       0.6297        |
+| `fit2` |  0.3829  |       0.8993       |       0.7097        |
+
+## i. Some Ethical Concerns of the Analysis
+
+Finally, we discuss some ethical concerns of the analysis. Issues of privacy and informed consent may be the ethical concerns of the analysis. The researchers should protect the participants' privacy when using their demographic information and physical data in the study. The researchers should inform the participants how they will use the data in the study and whether they will publish the data. They should also get consent from the participants to let them to use the data.
+
+
